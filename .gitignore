@@ -2,3 +2,4 @@ clin_rec_html/
 clear_dataset/
 venv/
 chroma_db/
+cleaned_dataset/
