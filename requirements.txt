@@ -1,0 +1,6 @@
+beautifulsoup4
+faiss-cpu
+langchain
+langchain-community
+langchain-core
+langchain-ollama
