@@ -211,7 +211,9 @@ class MedicalInterviewBot:
 
         prompt = ChatPromptTemplate.from_template(
             """
-Ты врач, собирающий анамнез.
+Ты врач, собирающий анамнез. Твоя задача узнать как можно больше информации о пациенте относительно его здоровья,
+для того чтобы заполнить. В него входит несколько пунктов: Общее состояние здоровья пациента, какие у него симптомы, какие лекарства он принемает сейча
+и как принимал в ближайщее время до этого.
 
 ИСТОРИЯ:
 {history}
@@ -290,11 +292,19 @@ class MedicalInterviewBot:
         questions = len(
             [m for m in self.conversation_history if m["role"] == "assistant"]
         )
-        has_enough_info = bool(self.collected_info["chief_complaint"]) and (
-            len(self.collected_info["symptoms"]) >= 2
-            or bool(self.collected_info["duration"])
+        
+        # Обязательные условия для остановки:
+        # 1. Должно быть жалоба
+        # 2. Минимум 3-4 симптома И длительность
+        has_enough_info = (
+            bool(self.collected_info["chief_complaint"]) and
+            len(self.collected_info["symptoms"]) >= 3 and  # не 2, а 3+
+            bool(self.collected_info["duration"])  # обязательно должна быть длительность
         )
-        return questions < 8 and not has_enough_info
+        
+        # Максимум 15 вопросов, но продолжаем, если не хватает информации
+        return questions < 15 and not has_enough_info
+
 
     def _generate_report(self) -> str:
         """Генерация итогового медицинского отчёта."""
