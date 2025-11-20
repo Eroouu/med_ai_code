@@ -88,7 +88,7 @@ def check_data_quality(data_dir):
         'short_texts': [],
         'no_sections': []
     }
-    ##все ворк
+    ##все ворк ввв
     for json_file in json_files:
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
