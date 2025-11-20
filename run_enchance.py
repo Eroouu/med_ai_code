@@ -2,20 +2,24 @@ from pathlib import Path
 import json
 import tempfile
 from datetime import datetime
+
 from langchain_community.vectorstores import FAISS
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
+
+
 class MedicalInterviewBot:
     def __init__(self, rebuild_db: bool = False):
         self.script_dir = Path(__file__).parent
-        #self.data_dir = self.script_dir / "cleaned_dataset"
+        # Новый формат датасета
         self.data_dir = self.script_dir / "enhanced_dataset"
-        # Используем temp папку (всегда английский путь)
+
+        # Временная папка для FAISS‑индекса
         temp_base = Path(tempfile.gettempdir())
         self.db_dir = temp_base / "medical_bot_db"
-        
+
         self.conversation_history = []
         self.collected_info = {
             "chief_complaint": "",
@@ -23,181 +27,190 @@ class MedicalInterviewBot:
             "duration": "",
             "additional_info": []
         }
-        
+
         print("=" * 70)
-        print("🏥 МЕДИЦИНСКИЙ ИНТЕРВЬЮЕР v2.5 (Temp DB)")
+        print("🏥 МЕДИЦИНСКИЙ ИНТЕРВЬЮЕР v2.6 (enhanced_dataset)")
         print("=" * 70)
         print(f"\n📁 База данных: {self.db_dir}")
-        
+
         if not self.data_dir.exists():
             print(f"\n❌ Папка {self.data_dir} не существует!")
             exit(1)
-        
+
         if rebuild_db and self.db_dir.exists():
             print("\n🗑️ Удаление старого индекса...")
             import shutil
             shutil.rmtree(self.db_dir)
-            print("   ✅ Удалён")
-        
+            print(" ✅ Удалён")
+
         self._load_or_create_knowledge_base()
-        
+
         print("\n🤖 Инициализация языковой модели...")
         self.llm = ChatOllama(model="llama3.1", temperature=0.3)
-        print("   ✅ llama3.1 готова")
-        
+        print(" ✅ llama3.1 готова")
+
         print("\n" + "=" * 70)
         print("✅ СИСТЕМА ГОТОВА!")
         print("=" * 70)
-    
+
+    # ---------- Работа с базой знаний ----------
+
     def _load_or_create_knowledge_base(self):
-        """Загрузка или создание FAISS индекса"""
-        
+        """Загрузка или создание FAISS индекса под enhanced_dataset."""
         embeddings = OllamaEmbeddings(model="nomic-embed-text")
-        
-        # Проверяем существует ли индекс
+
         if self.db_dir.exists() and (self.db_dir / "index.faiss").exists():
             print("\n📚 Найден существующий FAISS индекс")
-            print(f"   Путь: {self.db_dir}")
-            
+            print(f" Путь: {self.db_dir}")
             try:
-                print("   ⏳ Загрузка...")
-                # Используем load_local вместо pickle
+                print(" ⏳ Загрузка...")
                 self.vectorstore = FAISS.load_local(
                     str(self.db_dir),
                     embeddings,
-                    allow_dangerous_deserialization=True
+                    allow_dangerous_deserialization=True,
                 )
-                
-                # Проверка
-                test = self.vectorstore.similarity_search("тест", k=1)
-                print("   ✅ Индекс загружен успешно")
+                # Быстрая проверка
+                _ = self.vectorstore.similarity_search("тест", k=1)
+                print(" ✅ Индекс загружен успешно")
                 return
-                
             except Exception as e:
-                print(f"   ⚠️ Ошибка: {e}")
-                print("   🔄 Создаём новый...")
-        
-        print("\n📚 Создание нового FAISS индекса")
-        print("   ⏳ Займёт 5-15 минут\n")
-        
+                print(f" ⚠️ Ошибка: {e}")
+                print(" 🔄 Перестраиваем индекс...")
+
+        print("\n📚 Создание нового FAISS индекса (enhanced_dataset)")
+        print(" ⏳ Это может занять 5–15 минут\n")
         self._create_new_database(embeddings)
-    
+
     def _create_new_database(self, embeddings):
-        """Создание FAISS индекса"""
-        
-        # 1. Загрузка документов
+        """Создание FAISS индекса из enhanced_dataset."""
         print("1️⃣ Загрузка документов...")
+
         documents = []
         json_files = list(self.data_dir.glob("*.json"))
-        
+
         if not json_files:
-            print("   ❌ Нет JSON файлов!")
+            print(" ❌ В папке enhanced_dataset нет JSON‑файлов!")
             exit(1)
-        
+
         total = len(json_files)
-        print(f"   Найдено: {total} файлов")
-        
+        print(f" Найдено: {total} файлов")
+
         for i, json_file in enumerate(json_files, 1):
             try:
                 with open(json_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                
-                title = data.get("title", "")
+
+                title = (data.get("title") or "").strip()
+
+                # Основные разделы
+                sections = data.get("sections", {})
                 full_text = f"# {title}\n\n"
-                
-                if "sections" in data:
-                    for section_name, section_text in data["sections"].items():
-                        if section_text and str(section_text).strip():
-                            readable_name = section_name.replace("_", " ").title()
-                            full_text += f"## {readable_name}\n{section_text}\n\n"
-                
-                if len(full_text) > 100: # может надо увеличить или уменьшить, не согласен
-                    doc = Document(
-                        page_content=full_text,
-                        metadata={"title": title, "disease": title}
-                    )
-                    documents.append(doc)
-                
-                # Прогресс каждые 50 файлов
+
+                for section_name, section_text in sections.items():
+                    if not section_text or not str(section_text).strip():
+                        continue
+                    readable_name = section_name.replace("_", " ").title()
+                    full_text += f"## {readable_name}\n{section_text}\n\n"
+
+                if len(full_text) <= 100:
+                    # Слишком короткий документ – пропускаем
+                    continue
+
+                # Метаданные из enhance_medical_dataset
+                meta = data.get("metadata", {}) or {}
+                doc_metadata = {
+                    "title": title,
+                    "disease": title,
+                    "file": json_file.name,
+                    "categories": meta.get("categories", []),
+                    "symptoms": meta.get("symptoms", []),
+                    "complexity": meta.get("complexity", ""),
+                    "symptoms_count": meta.get("symptoms_count", 0),
+                    "filled_sections": meta.get("filled_sections", 0),
+                    "total_sections": meta.get("total_sections", 0),
+                    "completeness_score": meta.get("completeness_score", 0.0),
+                }
+
+                documents.append(
+                    Document(page_content=full_text, metadata=doc_metadata)
+                )
+
                 if i % 50 == 0 or i == total:
-                    print(f"   📊 Обработано: {i}/{total}")
-                    
+                    print(f" 📊 Обработано файлов: {i}/{total}")
+
             except Exception as e:
-                print(f"   ⚠️ {json_file.name}: {e}")
-        
-        print(f"   ✅ Загружено: {len(documents)} заболеваний")
-        
-        # 2. Разбивка
-        print("\n2️⃣ Разбивка текста...")
+                print(f" ⚠️ Ошибка в {json_file.name}: {e}")
+
+        print(f" ✅ Загружено заболеваний: {len(documents)}")
+
+        # 2. Разбивка текста
+        print("\n2️⃣ Разбивка текста на фрагменты...")
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
-            chunk_overlap=100
+            chunk_overlap=100,
         )
         splits = text_splitter.split_documents(documents)
         total_splits = len(splits)
-        print(f"   ✅ Фрагментов: {total_splits}")
-        
-        # 3. Создание эмбеддингов порциями
+        print(f" ✅ Фрагментов: {total_splits}")
+
+        # 3. Создание эмбеддингов
         print("\n3️⃣ Создание векторных эмбеддингов...")
-        print("   ⏳ Это займёт время - наберитесь терпения\n")
-        
+        print(" ⏳ Это займёт время, дождитесь окончания\n")
+
         batch_size = 100
         vectorstore = None
-        
+
         try:
             for i in range(0, total_splits, batch_size):
-                batch = splits[i:i+batch_size]
-                
+                batch = splits[i : i + batch_size]
                 if vectorstore is None:
-                    # Первая порция
                     vectorstore = FAISS.from_documents(batch, embeddings)
                 else:
-                    # Добавляем к существующей
                     vectorstore.add_documents(batch)
-                
-                # Прогресс
-                progress = min(i + batch_size, total_splits)
-                percentage = (progress / total_splits) * 100
-                print(f"   📊 {progress}/{total_splits} ({percentage:.1f}%)")
-            
-            self.vectorstore = vectorstore
-            
-            # 4. Сохранение через save_local
-            print("\n4️⃣ Сохранение индекса...")
-            self.db_dir.mkdir(parents=True, exist_ok=True)  # ← НОВАЯ ВЕРСИЯ (добавили parents=True)
 
-            
-            # Используем save_local вместо pickle - это правильный способ
+                progress = min(i + batch_size, total_splits)
+                percent = (progress / total_splits) * 100
+                print(f" 📊 {progress}/{total_splits} ({percent:.1f}%)")
+
+            self.vectorstore = vectorstore
+
+            # 4. Сохранение
+            print("\n4️⃣ Сохранение индекса...")
+            self.db_dir.mkdir(parents=True, exist_ok=True)
             self.vectorstore.save_local(str(self.db_dir))
-            
-            print(f"   ✅ Сохранено в: {self.db_dir}")
-            
+            print(f" ✅ Сохранено в: {self.db_dir}")
+
         except Exception as e:
-            print(f"\n   ❌ Ошибка: {e}")
+            print(f"\n ❌ Ошибка при создании индекса: {e}")
             import traceback
+
             traceback.print_exc()
             raise
-    
+
     def _search_context(self, query: str, k: int = 3) -> str:
+        """Поиск релевантного контекста в FAISS."""
         try:
             docs = self.vectorstore.similarity_search(query, k=k)
-            context = "\n\n".join([doc.page_content[:700] for doc in docs])
-            return context
+            return "\n\n".join(doc.page_content[:700] for doc in docs)
         except Exception as e:
             print(f"⚠️ Ошибка поиска: {e}")
             return ""
-    
+
+    # ---------- Логика диалога ----------
+
     def _generate_question(self) -> str:
-        """Генерация вопроса с обработкой ошибок"""
-        search_query = f"{self.collected_info['chief_complaint']} {' '.join(self.collected_info['symptoms'])}"
+        """Генерация следующего вопроса врачу‑ботом."""
+        search_query = f"{self.collected_info['chief_complaint']} " \
+                       f"{' '.join(self.collected_info['symptoms'])}"
         context = self._search_context(search_query, k=2)
-        
-        history = "\n".join([
+
+        history = "\n".join(
             f"{'Врач' if m['role'] == 'assistant' else 'Пациент'}: {m['content']}"
             for m in self.conversation_history[-4:]
-        ])
-    
-        prompt = ChatPromptTemplate.from_template("""
+        )
+
+        prompt = ChatPromptTemplate.from_template(
+            """
 Ты врач, собирающий анамнез.
 
 ИСТОРИЯ:
@@ -210,77 +223,93 @@ class MedicalInterviewBot:
 КЛИНИЧЕСКИЕ РЕКОМЕНДАЦИИ:
 {context}
 
-Задай ОДИН короткий вопрос для уточнения симптомов.
+Задай ОДИН короткий уточняющий вопрос.
+Вопрос:"""
+        )
 
-Вопрос:""")
-    
         try:
-            # Увеличиваем timeout и добавляем параметры
             from langchain_core.runnables import RunnableConfig
-            
+
             response = self.llm.invoke(
                 prompt.format(
                     history=history,
-                    chief_complaint=self.collected_info["chief_complaint"] or "не указано",
-                    symptoms=", ".join(self.collected_info["symptoms"]) if self.collected_info["symptoms"] else "нет",
-                    context=context or "Нет данных"
+                    chief_complaint=self.collected_info["chief_complaint"]
+                    or "не указано",
+                    symptoms=", ".join(self.collected_info["symptoms"])
+                    if self.collected_info["symptoms"]
+                    else "нет",
+                    context=context or "Нет данных",
                 ),
-                config=RunnableConfig(
-                    max_concurrency=1,
-                    timeout=30  # 30 секунд timeout
-                )
+                config=RunnableConfig(max_concurrency=1, timeout=30),
             )
             return response.content.strip()
         except Exception as e:
             print(f"\n⚠️ Ошибка LLM: {e}")
-            # Fallback вопросы
             fallback_questions = [
                 "Как давно у вас эти симптомы?",
                 "Усиливаются ли симптомы после еды?",
                 "Есть ли температура?",
                 "Была ли рвота?",
-                "Где именно локализуется боль?"
+                "Где именно локализуется боль?",
             ]
             import random
+
             return random.choice(fallback_questions)
-    
+
     def _extract_info(self, text: str):
+        """Грубое извлечение симптомов и длительности из ответа пациента."""
         text_lower = text.lower()
-        
-        time_words = ['день', 'дня', 'дней', 'неделю', 'месяц', 'год']
-        if any(w in text_lower for w in time_words) and not self.collected_info["duration"]:
+
+        time_words = ["день", "дня", "дней", "неделю", "месяц", "год"]
+        if any(w in text_lower for w in time_words) and not self.collected_info[
+            "duration"
+        ]:
             self.collected_info["duration"] = text
-        
-        symptoms = ['боль', 'температура', 'тошнота', 'рвота', 'слабость',
-                   'кашель', 'насморк', 'горло', 'голова', 'живот']
-        
-        for symptom in symptoms:
+
+        symptoms_vocab = [
+            "боль",
+            "температура",
+            "тошнота",
+            "рвота",
+            "слабость",
+            "кашель",
+            "насморк",
+            "горло",
+            "голова",
+            "живот",
+        ]
+        for symptom in symptoms_vocab:
             if symptom in text_lower:
-                if symptom not in " ".join(self.collected_info["symptoms"]).lower():
+                if symptom not in " ".join(
+                    self.collected_info["symptoms"]
+                ).lower():
                     self.collected_info["symptoms"].append(symptom)
-    
+
     def _should_continue(self) -> bool:
-        questions = len([m for m in self.conversation_history if m["role"] == "assistant"])
-        has_info = (
-            bool(self.collected_info["chief_complaint"]) and
-            (len(self.collected_info["symptoms"]) >= 2 or bool(self.collected_info["duration"]))
+        """Решение, продолжать ли интервью."""
+        questions = len(
+            [m for m in self.conversation_history if m["role"] == "assistant"]
         )
-        return questions < 8 and not has_info
-    
+        has_enough_info = bool(self.collected_info["chief_complaint"]) and (
+            len(self.collected_info["symptoms"]) >= 2
+            or bool(self.collected_info["duration"])
+        )
+        return questions < 8 and not has_enough_info
+
     def _generate_report(self) -> str:
-        """Генерация отчёта с обработкой ошибок"""
-        search_query = " ".join([
-            self.collected_info["chief_complaint"],
-            *self.collected_info["symptoms"]
-        ])
+        """Генерация итогового медицинского отчёта."""
+        search_query = " ".join(
+            [self.collected_info["chief_complaint"], *self.collected_info["symptoms"]]
+        )
         context = self._search_context(search_query, k=5)
-        
-        conversation = "\n".join([
+
+        conversation = "\n".join(
             f"{'Врач' if m['role'] == 'assistant' else 'Пациент'}: {m['content']}"
             for m in self.conversation_history
-        ])
-        
-        prompt = ChatPromptTemplate.from_template("""
+        )
+
+        prompt = ChatPromptTemplate.from_template(
+            """
 Составь медицинский отчёт для врача.
 
 БЕСЕДА:
@@ -290,7 +319,6 @@ class MedicalInterviewBot:
 {context}
 
 Формат:
-
 **Anamnesis morbi:**
 [История заболевания]
 
@@ -300,27 +328,23 @@ class MedicalInterviewBot:
 **Recommendations:**
 [План обследования]
 
-Отчёт:""")
-    
+Отчёт:"""
+        )
+
         try:
             from langchain_core.runnables import RunnableConfig
-            
-            print("   ⏳ Генерация отчёта (может занять 10-30 секунд)...")
-            
+
+            print(" ⏳ Генерация отчёта (10–30 секунд)...")
             response = self.llm.invoke(
                 prompt.format(
                     conversation=conversation,
-                    context=context or "Требуется обследование"
+                    context=context or "Требуется дополнительное обследование",
                 ),
-                config=RunnableConfig(
-                    timeout=60  # 60 секунд для отчёта
-                )
+                config=RunnableConfig(timeout=60),
             )
             return response.content
         except Exception as e:
             print(f"\n⚠️ Ошибка генерации: {e}")
-            
-            # Fallback - простой отчёт
             return f"""**Anamnesis morbi:**
 Пациент обратился с жалобами: {self.collected_info['chief_complaint']}
 Симптомы: {', '.join(self.collected_info['symptoms']) if self.collected_info['symptoms'] else 'не указаны'}
@@ -333,94 +357,95 @@ class MedicalInterviewBot:
 - Консультация врача
 - Общий анализ крови
 - УЗИ органов брюшной полости
-- При необходимости - дополнительные исследования"""
-    
+- При необходимости — дополнительные исследования"""
+
+    # ---------- Запуск интервью ----------
+
     def start_interview(self):
         print("\n" + "=" * 70)
         print("🩺 МЕДИЦИНСКОЕ ИНТЕРВЬЮ")
         print("=" * 70)
-        print("\nКоманды: 'стоп' - завершить, 'exit' - выход\n")
-        
+        print("\nКоманды: 'стоп' — завершить, 'exit' — выход\n")
+
         greeting = "Здравствуйте! Что вас беспокоит?"
         print(f"🤖: {greeting}\n")
         self.conversation_history.append({"role": "assistant", "content": greeting})
-        
+
         complaint = input("👤: ").strip()
-        
-        if complaint.lower() in ['exit', 'выход']:
+        if complaint.lower() in ["exit", "выход"]:
             print("\n👋 До свидания!")
             return
-        
         if not complaint:
             print("⚠️ Введите жалобу")
             return
-        
+
         self.collected_info["chief_complaint"] = complaint
         self.conversation_history.append({"role": "user", "content": complaint})
         self._extract_info(complaint)
-        
+
         while self._should_continue():
             try:
                 question = self._generate_question()
                 print(f"\n🤖: {question}\n")
-                self.conversation_history.append({"role": "assistant", "content": question})
-                
+                self.conversation_history.append(
+                    {"role": "assistant", "content": question}
+                )
+
                 answer = input("👤: ").strip()
-                
-                if answer.lower() in ['exit', 'выход']:
+                if answer.lower() in ["exit", "выход"]:
                     print("\n👋 До свидания!")
                     return
-                
-                if answer.lower() == 'стоп':
+                if answer.lower() == "стоп":
                     break
-                
                 if not answer:
                     continue
-                
-                self.conversation_history.append({"role": "user", "content": answer})
+
+                self.conversation_history.append(
+                    {"role": "user", "content": answer}
+                )
                 self._extract_info(answer)
-                
             except Exception as e:
                 print(f"⚠️ Ошибка: {e}")
                 break
-        
+
         print("\n" + "=" * 70)
         print("📋 ГЕНЕРАЦИЯ ОТЧЁТА...")
         print("=" * 70)
-        
+
         try:
             report = self._generate_report()
-            
             print("\n" + "=" * 70)
             print("📄 МЕДИЦИНСКИЙ ОТЧЁТ")
             print("=" * 70 + "\n")
             print(report)
             print("\n" + "=" * 70)
-            
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             report_file = self.script_dir / f"report_{timestamp}.txt"
-            
             with open(report_file, "w", encoding="utf-8") as f:
-                f.write(f"МЕДИЦИНСКИЙ ОТЧЁТ\n")
-                f.write(f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n")
+                f.write("МЕДИЦИНСКИЙ ОТЧЁТ\n")
+                f.write(
+                    f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+                )
                 f.write("=" * 70 + "\n\n")
                 f.write(report)
-            
-            print(f"\n💾 Сохранено: {report_file.name}")
-            
+
+            print(f"\n💾 Сохранено в файл: {report_file.name}")
         except Exception as e:
-            print(f"❌ Ошибка: {e}")
+            print(f"❌ Ошибка при сохранении отчёта: {e}")
+
 
 if __name__ == "__main__":
     import sys
+
     rebuild = "--rebuild" in sys.argv
-    
     try:
         bot = MedicalInterviewBot(rebuild_db=rebuild)
         bot.start_interview()
     except KeyboardInterrupt:
-        print("\n\n👋 Прервано")
+        print("\n\n👋 Прервано пользователем")
     except Exception as e:
-        print(f"\n❌ Ошибка: {e}")
+        print(f"\n❌ Критическая ошибка: {e}")
         import traceback
+
         traceback.print_exc()

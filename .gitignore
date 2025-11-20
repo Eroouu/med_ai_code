@@ -3,3 +3,6 @@ clear_dataset/
 venv/
 cleaned_dataset/
 vector_db/
+enhanced_dataset/
+faiss_db/
+symptoms_dataset/
