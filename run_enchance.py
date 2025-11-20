@@ -307,67 +307,115 @@ class MedicalInterviewBot:
 
 
     def _generate_report(self) -> str:
-        """Генерация итогового медицинского отчёта."""
-        search_query = " ".join(
-            [self.collected_info["chief_complaint"], *self.collected_info["symptoms"]]
-        )
+        """Генерация развёрнутого медицинского отчёта с анамнезом."""
+        
+        search_query = " ".join([
+            self.collected_info["chief_complaint"],
+            *self.collected_info["symptoms"]
+        ])
         context = self._search_context(search_query, k=5)
-
-        conversation = "\n".join(
+        
+        conversation = "\n".join([
             f"{'Врач' if m['role'] == 'assistant' else 'Пациент'}: {m['content']}"
             for m in self.conversation_history
-        )
+        ])
+        
+        prompt = ChatPromptTemplate.from_template("""
+Ты опытный врач, готовящий детальный анамнез пациента для коллег.
+На основе диалога ниже, заполни структурированный медицинский отчёт.
 
-        prompt = ChatPromptTemplate.from_template(
-            """
-Составь медицинский отчёт для врача.
-
-БЕСЕДА:
+ДИАЛОГ С ПАЦИЕНТОМ:
 {conversation}
 
-КЛИНИЧЕСКИЕ РЕКОМЕНДАЦИИ:
+КЛИНИЧЕСКИЕ ДАННЫЕ ИЗ БАЗЫ:
 {context}
 
-Формат:
-**Anamnesis morbi:**
-[История заболевания]
+СОБРАННАЯ ИНФОРМАЦИЯ:
+- Основная жалоба: {chief_complaint}
+- Симптомы: {symptoms}
+- Длительность: {duration}
+- Дополнительно: {additional_info}
 
-**Differential diagnosis:**
-[Возможные диагнозы]
+Заполни подробный СТРУКТУРИРОВАННЫЙ АНАМНЕЗ для врача:
 
-**Recommendations:**
-[План обследования]
+**ANAMNESIS VITAE (История жизни):**
+[Заполни на основе разговора: возраст, пол (если упомянут), профессиональные вредности, 
+образ жизни, курение/алкоголь, хронические заболевания, алергии]
 
-Отчёт:"""
-        )
+**ANAMNESIS MORBI (История болезни):**
+[Развернуто опиши: начало заболевания, течение, развитие симптомов, факторы, усиливающие/ослабляющие]
 
+**ЖАЛОБЫ И СИМПТОМЫ:**
+[Подробное описание каждого симптома: характер, интенсивность, локализация, время появления]
+
+**ДИФФЕРЕНЦИАЛЬНЫЙ ДИАГНОЗ:**
+[На основе клинических данных и симптомов выдвини 3-5 наиболее вероятных диагнозов с обоснованием]
+
+**ПЛАН ОБСЛЕДОВАНИЯ:**
+[Перечисли необходимые анализы и исследования, специалистов]
+
+**ПРИМЕЧАНИЯ ДЛЯ ВРАЧА:**
+[Ключевые моменты, на которые обратить внимание при осмотре]
+
+Готовый отчёт:""")
+    
         try:
             from langchain_core.runnables import RunnableConfig
-
-            print(" ⏳ Генерация отчёта (10–30 секунд)...")
+            
+            print(" ⏳ Генерация подробного отчёта (30-60 секунд)...")
             response = self.llm.invoke(
                 prompt.format(
                     conversation=conversation,
                     context=context or "Требуется дополнительное обследование",
+                    chief_complaint=self.collected_info["chief_complaint"] or "не указана",
+                    symptoms=", ".join(self.collected_info["symptoms"]) if self.collected_info["symptoms"] else "не указаны",
+                    duration=self.collected_info["duration"] or "не указана",
+                    additional_info=", ".join(self.collected_info["additional_info"]) if self.collected_info["additional_info"] else "отсутствует"
                 ),
-                config=RunnableConfig(timeout=60),
+                config=RunnableConfig(
+                    timeout=90  # Больше времени на подробный отчёт
+                ),
             )
             return response.content
+            
         except Exception as e:
             print(f"\n⚠️ Ошибка генерации: {e}")
-            return f"""**Anamnesis morbi:**
-Пациент обратился с жалобами: {self.collected_info['chief_complaint']}
-Симптомы: {', '.join(self.collected_info['symptoms']) if self.collected_info['symptoms'] else 'не указаны'}
-Длительность: {self.collected_info['duration'] if self.collected_info['duration'] else 'не указана'}
+            
+            # Fallback - структурированный отчёт вручную
+            return f"""
+**ANAMNESIS VITAE:**
+Информация об истории жизни не была собрана в ходе первичного интервью.
 
-**Differential diagnosis:**
-Требуется дополнительное обследование для постановки диагноза.
+**ANAMNESIS MORBI:**
+Пациент обратился с основной жалобой на: {self.collected_info['chief_complaint']}
 
-**Recommendations:**
-- Консультация врача
-- Общий анализ крови
-- УЗИ органов брюшной полости
-- При необходимости — дополнительные исследования"""
+Начало заболевания: {self.collected_info['duration'] if self.collected_info['duration'] else 'время начала не уточнено'}
+
+**ЖАЛОБЫ И СИМПТОМЫ:**
+{chr(10).join(f"- {s.capitalize()}" for s in self.collected_info['symptoms']) if self.collected_info['symptoms'] else "- Симптомы не указаны"}
+
+**ДИФФЕРЕНЦИАЛЬНЫЙ ДИАГНОЗ:**
+На основе предъявленных жалоб и симптомов необходимо рассмотреть:
+- Острые инфекционные заболевания
+- Хронические системные заболевания
+- Функциональные расстройства
+- Психосоматические нарушения
+
+Требуется уточняющее обследование.
+
+**ПЛАН ОБСЛЕДОВАНИЯ:**
+1. Общий анализ крови (ОАК)
+2. Общий анализ мочи (ОАМ)
+3. Биохимический анализ крови
+4. УЗИ органов брюшной полости (при наличии жалоб на боли в животе)
+5. ЭКГ (при наличии жалоб на боли в груди или нарушение ритма)
+6. По показаниям - консультация специалистов
+
+**ПРИМЕЧАНИЯ ДЛЯ ВРАЧА:**
+- Требуется более детальное уточнение анамнеза
+- Необходима физикальная диагностика
+- На основе результатов анализов корректировать дифференциальный диагноз
+"""
 
     # ---------- Запуск интервью ----------
 
