@@ -94,6 +94,7 @@ def check_data_quality(data_dir):
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
+            
             # Проверка заголовка
             title = data.get('title', '').strip()
             if not title:
@@ -101,6 +102,8 @@ def check_data_quality(data_dir):
             
             # Проверка разделов
             if 'sections' not in data:
+
+                
                 problems['no_sections'].append(json_file.name)
             else:
                 for section_name, section_content in data['sections'].items():
