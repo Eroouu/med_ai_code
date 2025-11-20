@@ -13,10 +13,8 @@ from langchain_core.prompts import ChatPromptTemplate
 class MedicalInterviewBot:
     def __init__(self, rebuild_db: bool = False):
         self.script_dir = Path(__file__).parent
-        # Новый формат датасета
         self.data_dir = self.script_dir / "enhanced_dataset"
 
-        # Временная папка для FAISS‑индекса
         temp_base = Path(tempfile.gettempdir())
         self.db_dir = temp_base / "medical_bot_db"
 
@@ -29,7 +27,7 @@ class MedicalInterviewBot:
         }
 
         print("=" * 70)
-        print("🏥 МЕДИЦИНСКИЙ ИНТЕРВЬЮЕР v2.6 (enhanced_dataset)")
+        print("🏥 МЕДИЦИНСКИЙ ИНТЕРВЬЮЕР v3.0 (enhanced_dataset)")
         print("=" * 70)
         print(f"\n📁 База данных: {self.db_dir}")
 
@@ -69,7 +67,6 @@ class MedicalInterviewBot:
                     embeddings,
                     allow_dangerous_deserialization=True,
                 )
-                # Быстрая проверка
                 _ = self.vectorstore.similarity_search("тест", k=1)
                 print(" ✅ Индекс загружен успешно")
                 return
@@ -101,8 +98,6 @@ class MedicalInterviewBot:
                     data = json.load(f)
 
                 title = (data.get("title") or "").strip()
-
-                # Основные разделы
                 sections = data.get("sections", {})
                 full_text = f"# {title}\n\n"
 
@@ -113,10 +108,8 @@ class MedicalInterviewBot:
                     full_text += f"## {readable_name}\n{section_text}\n\n"
 
                 if len(full_text) <= 100:
-                    # Слишком короткий документ – пропускаем
                     continue
 
-                # Метаданные из enhance_medical_dataset
                 meta = data.get("metadata", {}) or {}
                 doc_metadata = {
                     "title": title,
@@ -143,7 +136,6 @@ class MedicalInterviewBot:
 
         print(f" ✅ Загружено заболеваний: {len(documents)}")
 
-        # 2. Разбивка текста
         print("\n2️⃣ Разбивка текста на фрагменты...")
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
@@ -153,7 +145,6 @@ class MedicalInterviewBot:
         total_splits = len(splits)
         print(f" ✅ Фрагментов: {total_splits}")
 
-        # 3. Создание эмбеддингов
         print("\n3️⃣ Создание векторных эмбеддингов...")
         print(" ⏳ Это займёт время, дождитесь окончания\n")
 
@@ -174,7 +165,6 @@ class MedicalInterviewBot:
 
             self.vectorstore = vectorstore
 
-            # 4. Сохранение
             print("\n4️⃣ Сохранение индекса...")
             self.db_dir.mkdir(parents=True, exist_ok=True)
             self.vectorstore.save_local(str(self.db_dir))
@@ -183,7 +173,6 @@ class MedicalInterviewBot:
         except Exception as e:
             print(f"\n ❌ Ошибка при создании индекса: {e}")
             import traceback
-
             traceback.print_exc()
             raise
 
@@ -196,10 +185,77 @@ class MedicalInterviewBot:
             print(f"⚠️ Ошибка поиска: {e}")
             return ""
 
+    # ---------- Валидация ввода ----------
+
+    def _is_valid_medical_input(self, text: str) -> bool:
+        """Проверяет валидность медицинского ввода."""
+        if not text or len(text.strip()) < 3:
+            return False
+        
+        text_lower = text.lower()
+        
+        # Чёрный список бессмыслицы
+        bad_words = ["не стоит", "ха ха", "кек", "zzz", "123", "ненужно"]
+        if any(word in text_lower for word in bad_words):
+            return False
+        
+        # Минимум 2 слова
+        return len(text.split()) >= 2
+
+    def _get_valid_patient_answer(self) -> str:
+        """Получает ответ пациента с валидацией."""
+        attempts = 0
+        max_attempts = 3
+        
+        while attempts < max_attempts:
+            answer = input("👤: ").strip()
+            
+            # Обработка команд
+            if answer.lower() in ["exit", "выход"]:
+                print("\n👋 До свидания!")
+                return None
+            if answer.lower() == "стоп":
+                return "STOP"
+            
+            # Проверка валидности
+            if not self._is_valid_medical_input(answer):
+                attempts += 1
+                if attempts < max_attempts:
+                    print(f"\n⚠️ Пожалуйста, опишите медицинскую проблему. "
+                          f"Попытка {attempts}/{max_attempts}\n")
+                    continue
+                else:
+                    print("\n❌ Похоже, вы не хотите обсуждать медицинскую проблему.")
+                    return None
+            
+            return answer
+        
+        return None
+
     # ---------- Логика диалога ----------
 
+    def _should_continue(self) -> bool:
+        """Решение, продолжать ли интервью."""
+        questions = len(
+            [m for m in self.conversation_history if m["role"] == "assistant"]
+        )
+        
+        # Проверка условий остановки
+        has_chief_complaint = bool(self.collected_info["chief_complaint"])
+        has_symptoms = len(self.collected_info["symptoms"]) >= 3
+        has_duration = bool(self.collected_info["duration"])
+        
+        has_enough_info = has_chief_complaint and has_symptoms and has_duration
+        
+        # Для отладки
+        print(f"\n📊 Статус: вопросов={questions}, симптомов={len(self.collected_info['symptoms'])}, "
+              f"длительность={'✓' if has_duration else '✗'}")
+        
+        # Продолжаем, если не задали 15 вопросов И не собрали информацию
+        return questions < 15 and not has_enough_info
+
     def _generate_question(self) -> str:
-        """Генерация следующего вопроса врачу‑ботом."""
+        """Генерация следующего вопроса врачу-ботом."""
         search_query = f"{self.collected_info['chief_complaint']} " \
                        f"{' '.join(self.collected_info['symptoms'])}"
         context = self._search_context(search_query, k=2)
@@ -211,9 +267,8 @@ class MedicalInterviewBot:
 
         prompt = ChatPromptTemplate.from_template(
             """
-Ты врач, собирающий анамнез. Твоя задача узнать как можно больше информации о пациенте относительно его здоровья,
-для того чтобы заполнить. В него входит несколько пунктов: Общее состояние здоровья пациента, какие у него симптомы, какие лекарства он принемает сейча
-и как принимал в ближайщее время до этого.
+Ты врач, собирающий анамнез. Если пациент ответил невразумительно, 
+тактично переведи разговор на медицинскую проблему.
 
 ИСТОРИЯ:
 {history}
@@ -225,8 +280,7 @@ class MedicalInterviewBot:
 КЛИНИЧЕСКИЕ РЕКОМЕНДАЦИИ:
 {context}
 
-Задай ОДИН короткий уточняющий вопрос.
-Вопрос:"""
+Задай ОДИН короткий уточняющий вопрос по делу:"""
         )
 
         try:
@@ -235,79 +289,78 @@ class MedicalInterviewBot:
             response = self.llm.invoke(
                 prompt.format(
                     history=history,
-                    chief_complaint=self.collected_info["chief_complaint"]
-                    or "не указано",
-                    symptoms=", ".join(self.collected_info["symptoms"])
-                    if self.collected_info["symptoms"]
-                    else "нет",
+                    chief_complaint=self.collected_info["chief_complaint"] or "не указано",
+                    symptoms=", ".join(self.collected_info["symptoms"]) if self.collected_info["symptoms"] else "нет",
                     context=context or "Нет данных",
                 ),
-                config=RunnableConfig(max_concurrency=1, timeout=30),
+                config=RunnableConfig(max_concurrency=1, timeout=60),
             )
             return response.content.strip()
         except Exception as e:
             print(f"\n⚠️ Ошибка LLM: {e}")
             fallback_questions = [
                 "Как давно у вас эти симптомы?",
-                "Усиливаются ли симптомы после еды?",
+                "Усиливаются ли симптомы после еды или физической нагрузки?",
                 "Есть ли температура?",
-                "Была ли рвота?",
                 "Где именно локализуется боль?",
+                "Есть ли тошнота или рвота?",
             ]
             import random
-
             return random.choice(fallback_questions)
 
     def _extract_info(self, text: str):
         """Грубое извлечение симптомов и длительности из ответа пациента."""
         text_lower = text.lower()
 
-        time_words = ["день", "дня", "дней", "неделю", "месяц", "год"]
-        if any(w in text_lower for w in time_words) and not self.collected_info[
-            "duration"
-        ]:
+        time_words = ["день", "дня", "дней", "неделю", "месяц", "год", "час", "часов", "минут"]
+        if any(w in text_lower for w in time_words) and not self.collected_info["duration"]:
             self.collected_info["duration"] = text
 
         symptoms_vocab = [
-            "боль",
-            "температура",
-            "тошнота",
-            "рвота",
-            "слабость",
-            "кашель",
-            "насморк",
-            "горло",
-            "голова",
-            "живот",
+            "боль", "температура", "тошнота", "рвота", "слабость", 
+            "кашель", "насморк", "горло", "голова", "живот", 
+            "сыпь", "озноб", "головокружение", "диарея", "запор"
         ]
+        
         for symptom in symptoms_vocab:
             if symptom in text_lower:
-                if symptom not in " ".join(
-                    self.collected_info["symptoms"]
-                ).lower():
+                if symptom not in " ".join(self.collected_info["symptoms"]).lower():
                     self.collected_info["symptoms"].append(symptom)
 
-    def _should_continue(self) -> bool:
-        """Решение, продолжать ли интервью."""
-        questions = len(
-            [m for m in self.conversation_history if m["role"] == "assistant"]
-        )
-        
-        # Обязательные условия для остановки:
-        # 1. Должно быть жалоба
-        # 2. Минимум 3-4 симптома И длительность
-        has_enough_info = (
-            bool(self.collected_info["chief_complaint"]) and
-            len(self.collected_info["symptoms"]) >= 3 and  # не 2, а 3+
-            bool(self.collected_info["duration"])  # обязательно должна быть длительность
-        )
-        
-        # Максимум 15 вопросов, но продолжаем, если не хватает информации
-        return questions < 15 and not has_enough_info
-
-
     def _generate_report(self) -> str:
-        """Генерация развёрнутого медицинского отчёта с анамнезом."""
+        """Генерация развёрнутого медицинского отчёта с валидацией."""
+        
+        # Проверка основной жалобы
+        if not self.collected_info["chief_complaint"]:
+            return """❌ ОШИБКА: Основная жалоба пациента не была собрана.
+        
+Невозможно создать медицинский отчёт без основной информации о проблеме пациента.
+Пожалуйста, перезапустите интервью."""
+        
+        # Санитизация истории
+        clean_history = []
+        for msg in self.conversation_history:
+            content = msg.get("content", "").strip().lower()
+            
+            if any(bad in content for bad in [
+                "не могу ответить",
+                "неуместный вопрос",
+                "не является медицинской",
+                "не стоит",
+                "ха ха",
+                "кек"
+            ]):
+                continue
+            
+            clean_history.append(msg)
+        
+        if len(clean_history) < 3:
+            clean_history = self.conversation_history
+        
+        conversation = "\n".join([
+            f"{'Врач' if m['role'] == 'assistant' else 'Пациент'}: {m['content']}"
+            for m in clean_history
+        ])
         
         search_query = " ".join([
             self.collected_info["chief_complaint"],
@@ -315,10 +368,10 @@ class MedicalInterviewBot:
         ])
         context = self._search_context(search_query, k=5)
         
-        conversation = "\n".join([
-            f"{'Врач' if m['role'] == 'assistant' else 'Пациент'}: {m['content']}"
-            for m in self.conversation_history
-        ])
+        # Валидация симптомов
+        symptoms_list = [s for s in self.collected_info["symptoms"] if len(s) > 2]
+        if not symptoms_list:
+            symptoms_list = ["не уточнены"]
         
         prompt = ChatPromptTemplate.from_template("""
 Ты опытный врач, готовящий детальный анамнез пациента для коллег.
@@ -334,87 +387,73 @@ class MedicalInterviewBot:
 - Основная жалоба: {chief_complaint}
 - Симптомы: {symptoms}
 - Длительность: {duration}
-- Дополнительно: {additional_info}
 
 Заполни подробный СТРУКТУРИРОВАННЫЙ АНАМНЕЗ для врача:
 
-**ANAMNESIS VITAE (История жизни):**
-[Заполни на основе разговора: возраст, пол (если упомянут), профессиональные вредности, 
-образ жизни, курение/алкоголь, хронические заболевания, алергии]
-
 **ANAMNESIS MORBI (История болезни):**
-[Развернуто опиши: начало заболевания, течение, развитие симптомов, факторы, усиливающие/ослабляющие]
+[Развернуто опиши: начало заболевания, течение, развитие симптомов]
 
 **ЖАЛОБЫ И СИМПТОМЫ:**
-[Подробное описание каждого симптома: характер, интенсивность, локализация, время появления]
+[Подробное описание каждого симптома]
 
 **ДИФФЕРЕНЦИАЛЬНЫЙ ДИАГНОЗ:**
-[На основе клинических данных и симптомов выдвини 3-5 наиболее вероятных диагнозов с обоснованием]
+[На основе жалобы и симптомов выдвини 3-5 вероятных диагнозов]
 
 **ПЛАН ОБСЛЕДОВАНИЯ:**
-[Перечисли необходимые анализы и исследования, специалистов]
+1. Общий анализ крови (ОАК)
+2. Биохимический анализ крови
+3. [Дополнительные исследования по показаниям]
 
-**ПРИМЕЧАНИЯ ДЛЯ ВРАЧА:**
-[Ключевые моменты, на которые обратить внимание при осмотре]
+**РЕКОМЕНДАЦИИ:**
+[Общие рекомендации пациенту]
 
-Готовый отчёт:""")
-    
+Отчёт:""")
+        
         try:
             from langchain_core.runnables import RunnableConfig
             
-            print(" ⏳ Генерация подробного отчёта (30-60 секунд)...")
+            print(" ⏳ Генерация отчёта (30-60 секунд)...")
             response = self.llm.invoke(
                 prompt.format(
-                    conversation=conversation,
+                    conversation=conversation if conversation else "Диалог не был продуктивен",
                     context=context or "Требуется дополнительное обследование",
-                    chief_complaint=self.collected_info["chief_complaint"] or "не указана",
-                    symptoms=", ".join(self.collected_info["symptoms"]) if self.collected_info["symptoms"] else "не указаны",
-                    duration=self.collected_info["duration"] or "не указана",
-                    additional_info=", ".join(self.collected_info["additional_info"]) if self.collected_info["additional_info"] else "отсутствует"
+                    chief_complaint=self.collected_info["chief_complaint"],
+                    symptoms=", ".join(symptoms_list),
+                    duration=self.collected_info["duration"] or "не указана"
                 ),
-                config=RunnableConfig(
-                    timeout=90  # Больше времени на подробный отчёт
-                ),
+                config=RunnableConfig(timeout=90),
             )
             return response.content
             
         except Exception as e:
             print(f"\n⚠️ Ошибка генерации: {e}")
             
-            # Fallback - структурированный отчёт вручную
+            # Fallback отчёт
             return f"""
-**ANAMNESIS VITAE:**
-Информация об истории жизни не была собрана в ходе первичного интервью.
-
 **ANAMNESIS MORBI:**
-Пациент обратился с основной жалобой на: {self.collected_info['chief_complaint']}
-
-Начало заболевания: {self.collected_info['duration'] if self.collected_info['duration'] else 'время начала не уточнено'}
+Пациент обратился с жалобой на: {self.collected_info['chief_complaint']}
+Длительность: {self.collected_info['duration'] if self.collected_info['duration'] else 'не указана'}
 
 **ЖАЛОБЫ И СИМПТОМЫ:**
-{chr(10).join(f"- {s.capitalize()}" for s in self.collected_info['symptoms']) if self.collected_info['symptoms'] else "- Симптомы не указаны"}
+{chr(10).join(f"- {s.capitalize()}" for s in symptoms_list)}
 
 **ДИФФЕРЕНЦИАЛЬНЫЙ ДИАГНОЗ:**
-На основе предъявленных жалоб и симптомов необходимо рассмотреть:
+На основе предъявленных жалоб необходимо рассмотреть:
 - Острые инфекционные заболевания
-- Хронические системные заболевания
+- Хронические системные заболевания  
 - Функциональные расстройства
-- Психосоматические нарушения
-
-Требуется уточняющее обследование.
 
 **ПЛАН ОБСЛЕДОВАНИЯ:**
 1. Общий анализ крови (ОАК)
 2. Общий анализ мочи (ОАМ)
 3. Биохимический анализ крови
-4. УЗИ органов брюшной полости (при наличии жалоб на боли в животе)
-5. ЭКГ (при наличии жалоб на боли в груди или нарушение ритма)
-6. По показаниям - консультация специалистов
+4. УЗИ по показаниям
+5. По результатам — консультация узких специалистов
 
-**ПРИМЕЧАНИЯ ДЛЯ ВРАЧА:**
-- Требуется более детальное уточнение анамнеза
-- Необходима физикальная диагностика
-- На основе результатов анализов корректировать дифференциальный диагноз
+**РЕКОМЕНДАЦИИ:**
+- Соблюдение режима покоя
+- Обильное питьё
+- Повторная консультация при ухудшении состояния
 """
 
     # ---------- Запуск интервью ----------
@@ -429,18 +468,19 @@ class MedicalInterviewBot:
         print(f"🤖: {greeting}\n")
         self.conversation_history.append({"role": "assistant", "content": greeting})
 
-        complaint = input("👤: ").strip()
-        if complaint.lower() in ["exit", "выход"]:
-            print("\n👋 До свидания!")
+        # Получение жалобы пациента с валидацией
+        complaint = self._get_valid_patient_answer()
+        if complaint is None:
             return
-        if not complaint:
-            print("⚠️ Введите жалобу")
+        if complaint == "STOP":
+            print("\n👋 До свидания!")
             return
 
         self.collected_info["chief_complaint"] = complaint
         self.conversation_history.append({"role": "user", "content": complaint})
         self._extract_info(complaint)
 
+        # Основной цикл интервью
         while self._should_continue():
             try:
                 question = self._generate_question()
@@ -449,19 +489,16 @@ class MedicalInterviewBot:
                     {"role": "assistant", "content": question}
                 )
 
-                answer = input("👤: ").strip()
-                if answer.lower() in ["exit", "выход"]:
-                    print("\n👋 До свидания!")
-                    return
-                if answer.lower() == "стоп":
+                # Валидированный ввод пациента
+                answer = self._get_valid_patient_answer()
+                if answer is None:
                     break
-                if not answer:
-                    continue
+                if answer == "STOP":
+                    break
 
-                self.conversation_history.append(
-                    {"role": "user", "content": answer}
-                )
+                self.conversation_history.append({"role": "user", "content": answer})
                 self._extract_info(answer)
+                
             except Exception as e:
                 print(f"⚠️ Ошибка: {e}")
                 break
@@ -482,9 +519,7 @@ class MedicalInterviewBot:
             report_file = self.script_dir / f"report_{timestamp}.txt"
             with open(report_file, "w", encoding="utf-8") as f:
                 f.write("МЕДИЦИНСКИЙ ОТЧЁТ\n")
-                f.write(
-                    f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-                )
+                f.write(f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n")
                 f.write("=" * 70 + "\n\n")
                 f.write(report)
 
@@ -505,5 +540,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ Критическая ошибка: {e}")
         import traceback
-
         traceback.print_exc()
