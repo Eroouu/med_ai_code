@@ -142,7 +142,6 @@ async def save_general_question_answer(request: GeneralQuestionAnswerRequest):
             field_name=request.question_key,
             answer=request.answer
         )
-        print(f"   Нормализовано: {normalized_answer}")
         
         # Сохраняем ответ
         success = await bot.save_general_question_answer(
@@ -251,7 +250,7 @@ async def handle_symptoms_message(request: SymptomMessageRequest):
             print(f"\n✅ ЭТАП 3 завершен: достаточно информации собрано")
             print(f"📊 Генерирую отчет для врача...")
             
-            report = bot.generate_text_report(request.session_id)
+            report = await bot.generate_text_report(request.session_id)
             session = bot.load_session(request.session_id)
             
             return {
@@ -304,7 +303,7 @@ async def get_session_report(session_id: str):
 async def get_session_report_text(session_id: str):
     """📄 Получить текстовый отчет для врача"""
     try:
-        report = bot.generate_text_report(session_id)
+        report = await bot.generate_text_report(session_id)
         if report:
             return {"status": "ok", "text_report": report}
         else:
@@ -346,7 +345,7 @@ async def download_report(session_id: str):
     """
     try:
         # Генерируем текстовый отчет
-        report = bot.generate_text_report(session_id)
+        report = await bot.generate_text_report(session_id)
         
         if not report:
             return {"status": "error", "message": "Сессия не найдена"}
